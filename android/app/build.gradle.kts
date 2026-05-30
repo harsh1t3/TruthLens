@@ -35,6 +35,16 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Force native libs (libonnxruntime.so) to be extracted to /data/data/<pkg>/lib/
+    // on install instead of staying compressed inside the APK. Required for FFI
+    // plugins that load libs via raw dlopen("libname.so") — without this,
+    // Android 6+ leaves the lib uncompressed-but-inside-APK and dlopen fails.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 flutter {
