@@ -14,20 +14,21 @@ Capture or pick an image and TruthLens returns:
   **Edited**, or **Inconclusive**.
 - A **spectral heatmap** highlighting regions whose frequency profile is
   inconsistent with natural photography.
-- A breakdown of **four detectors**, each independent:
+- A breakdown of detectors, each independent:
 
   | Detector | What it looks for |
   |---|---|
-  | **Generator signature** | EXIF Software / Processing Software fields, PNG `tEXt` and `iTXt` chunks (Automatic1111 `parameters`, ComfyUI `prompt` / `workflow`), and known generator names — Midjourney, DALL-E, Stable Diffusion, Flux, Firefly, Imagen, Sora, Leonardo, Ideogram, Runway, and more. A direct hit names the tool. |
+  | **AI classifier** | On-device Swin Transformer (int8 quantized, ~91 MB) trained on real-photo vs SDXL pairs. Runs locally via ONNX Runtime. The dominant signal. |
+  | **Generator signature** | EXIF Software / Processing Software fields, PNG `tEXt` and `iTXt` chunks (Automatic1111 `parameters`, ComfyUI `prompt` / `workflow`), and known generator names — Midjourney, DALL-E, Stable Diffusion, Flux, Firefly, Imagen, Sora, Leonardo, Ideogram, Runway, and more. A direct hit overrides the classifier. |
   | **C2PA provenance** | Detects whether the file carries a C2PA manifest — the JUMBF box in JPEG APP11 or the `caBX` chunk in PNG. Presence ≠ AI on its own, but C2PA without camera Make/Model is a soft AI lean. |
-  | **Spectral fingerprint** | Subtracts a Gaussian blur from the luminance plane, then measures high-frequency residual per patch versus local contrast. Diffusion-decoded images suppress micro-texture in contentful regions — that's what this scores. |
-  | **Compression coherence** | Gradient ratio across JPEG 8×8 block boundaries vs. block interiors. Reveals heavy or repeated compression. |
-  | **Metadata integrity** | EXIF DateTime field consistency and missing Make/Model. Editor / generator software tags from any source raise the score sharply. |
+  | **Spectral fingerprint** | Subtracts a Gaussian blur from the luminance plane, then measures high-frequency residual per patch versus local contrast. Produces the per-region heatmap shown on the result screen. |
+  | **Compression coherence** | Gradient ratio across JPEG 8×8 block boundaries vs. block interiors. |
+  | **Metadata integrity** | EXIF DateTime field consistency and missing Make/Model. Editor / generator software tags raise the score sharply. |
 
-The four detector scores are weighted into the final trust score:
+The classifier-blended AI signal and the heuristics are weighted into the final trust score:
 
 ```dart
-trust = (100 - (aiSignal * 40 + spectral * 25 + metadata * 20 + compression * 15))
+trust = (100 - (aiSignal * 55 + spectral * 12 + metadata * 18 + compression * 15))
         .clamp(0.0, 100.0);
 ```
 
@@ -37,7 +38,9 @@ trust = (100 - (aiSignal * 40 + spectral * 25 + metadata * 20 + compression * 15
 |---|---|
 | Framework | Flutter 3.41, Material 3, Impeller renderer |
 | Storage | Hive 2 (`hive_flutter`) — schema v2 box `scans_v2` |
-| Image processing | `image` package, pure Dart, run in a background isolate via `compute()` |
+| ML runtime | ONNX Runtime via `onnxruntime: ^1.4.1` (Android arm32/arm64) |
+| Classifier | Swin-Tiny `Organika/sdxl-detector`, dynamic int8 quantization → ~91 MB |
+| Heuristics | `image` package, pure Dart, run in a background isolate via `compute()` |
 | Metadata | `exif` package + a hand-written PNG `tEXt`/`iTXt` parser |
 | Pickers | `image_picker` (Photo Picker on Android 13+) |
 | UI | Liquid-glass — `BackdropFilter(blur 22)` over ambient color blobs, hairline borders, refined typography |
@@ -50,13 +53,14 @@ lib/
 ├── main.dart                              # Hive init, theme, entry
 ├── models/
 │   └── scan_result.dart                   # @HiveType v2 record
-├── services/                              # All run as top-level functions
+├── services/
+│   ├── ai_classifier_service.dart         # Swin-Tiny ONNX, main-thread async
 │   ├── generator_signature_service.dart   # EXIF + PNG chunk parser
 │   ├── c2pa_service.dart                  # JUMBF / caBX detector
-│   ├── spectral_service.dart              # high-freq residual analysis + heatmap
+│   ├── spectral_service.dart              # high-freq residual + heatmap
 │   ├── metadata_service.dart              # EXIF integrity
 │   ├── compression_service.dart           # 8-pixel block boundary ratio
-│   └── analysis_orchestrator.dart         # runs all 5 in one isolate
+│   └── analysis_orchestrator.dart         # classifier + heuristics in parallel
 ├── screens/
 │   ├── splash_screen.dart
 │   ├── home_screen.dart
@@ -76,19 +80,26 @@ lib/
     └── constants.dart
 ```
 
-### Isolate boundary
+### Concurrency model
 
-Image bytes go in, primitives + one heatmap PNG come out — no raw RGBA
-buffers ever cross the isolate boundary. The image is decoded once,
-downscaled to a 1024-px long edge, and shared across all five detectors
-sequentially.
+The classifier runs on the main thread via ONNX Runtime's `runAsync` (the
+native session uses its own threads, so the UI stays responsive) while the
+heuristics run in parallel inside a `compute()` isolate. Image bytes go in,
+primitives + one heatmap PNG come out — no raw RGBA buffers ever cross the
+isolate boundary.
 
 ## Running locally
 
+The classifier model is too large to commit, so a one-time prepare step
+downloads and quantizes it into `assets/models/`:
+
 ```bash
+pip install onnx onnxruntime pillow numpy
+python tools/model_prep/prepare_model.py    # ~340 MB download → ~91 MB int8
+
 flutter pub get
 dart run build_runner build --delete-conflicting-outputs
-flutter run                       # connected Android device or emulator
+flutter run                                 # connected Android device or emulator
 ```
 
 Minimum Android SDK: API 21 (Lollipop). Permissions: CAMERA on first
@@ -97,17 +108,17 @@ API 33+).
 
 ## Honest limitations
 
-- **Generator signatures** are by far the strongest signal but only present
-  when the producing tool didn't strip metadata (Midjourney and Adobe
-  Firefly usually keep theirs; many forums and chat apps strip everything).
-- **Spectral analysis** is a heuristic — a real photograph passed through a
-  noise-reducing filter can score high; a high-fidelity GAN trained to
-  preserve micro-texture can score low. Pair it with the other signals
-  rather than reading it alone.
-- **C2PA detection** here checks for *presence* of a manifest, not
-  cryptographic validity — that requires the full C2PA SDK and trust list.
+- **The classifier was fine-tuned on Wikimedia photos vs SDXL images.** It
+  generalizes well to other diffusion outputs (DALL-E 3, Flux, Midjourney
+  v6+) in practice but is biased toward the styles in its training set. New
+  generators with unfamiliar fingerprints can slip through.
+- **Int8 quantization** trades a few percentage points of accuracy for the
+  4× size reduction. The full-precision float32 model is more accurate but
+  weighs 337 MB.
+- **C2PA detection** checks for *presence* of a manifest, not cryptographic
+  validity — that requires the full C2PA SDK and trust list.
 - The five animated step pills on the analysis screen are paced on a timer
-  for UX; the orchestrator is one isolate call.
+  for UX; the orchestrator is two parallel paths, not five sequential steps.
 
 ## License
 

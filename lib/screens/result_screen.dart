@@ -261,10 +261,10 @@ class ResultScreen extends StatelessWidget {
     return Column(
       children: [
         ResultBreakdownCard(
-          title: 'Generator signature',
+          title: 'AI classifier',
           subtitle: scan.aiGenerator != null
-              ? 'Direct match: ${scan.aiGenerator}'
-              : 'No known AI generator name found in metadata.',
+              ? 'Direct metadata match: ${scan.aiGenerator}'
+              : 'On-device Swin model + metadata signature scan.',
           score: scan.aiSignalScore,
           icon: Icons.auto_awesome_outlined,
           color: const Color(0xFF6D5BFF),

@@ -9,18 +9,15 @@ import 'package:uuid/uuid.dart';
 
 import '../models/scan_result.dart';
 import '../utils/color_utils.dart';
+import 'ai_classifier_service.dart';
 import 'c2pa_service.dart';
 import 'compression_service.dart';
 import 'generator_signature_service.dart';
 import 'metadata_service.dart';
 import 'spectral_service.dart';
 
-/// Top-level entry point invoked via `compute()`.
-///
-/// Decodes once (downscaled to a 1024px long edge), then runs all detectors
-/// sequentially inside one isolate. Compressed bytes in, primitives + one
-/// heatmap PNG out — never raw RGBA buffers across the boundary.
-Future<Map<String, dynamic>> _analyzeInIsolate(Uint8List originalBytes) async {
+/// Heuristic detectors that run inside one isolate (no Flutter bindings needed).
+Future<Map<String, dynamic>> _heuristicsInIsolate(Uint8List originalBytes) async {
   final decoded = img.decodeImage(originalBytes);
   if (decoded == null) {
     return {'error': 'unsupported_image'};
@@ -57,50 +54,72 @@ class AnalysisOrchestrator {
   final Box<ScanResult> _box;
   static const _uuid = Uuid();
 
+  /// Main flow:
+  ///   1. Read bytes on main thread.
+  ///   2. Kick off the heuristics isolate AND the on-device AI classifier
+  ///      concurrently — they're independent.
+  ///   3. Merge into a single ScanResult, persist, return.
   Future<ScanResult> runAnalysis(File imageFile) async {
     final bytes = await imageFile.readAsBytes();
-    final result = await compute(_analyzeInIsolate, bytes);
 
-    if (result.containsKey('error')) {
+    // Decode once on the main thread for the classifier. The image package's
+    // decoder is cheap; the classifier itself does its own resize to 224×224.
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) throw const FormatException('Unsupported or corrupt image');
+
+    final aiFuture = _classifySafely(decoded);
+    final heuristicsFuture = compute(_heuristicsInIsolate, bytes);
+
+    final results = await Future.wait([aiFuture, heuristicsFuture]);
+    final aiResult = results[0];
+    final heuristicResult = results[1];
+
+    if (heuristicResult.containsKey('error')) {
       throw const FormatException('Unsupported or corrupt image');
     }
 
-    final gen = result['generator'] as Map;
-    final c2pa = result['c2pa'] as Map;
-    final meta = result['metadata'] as Map;
-    final spectral = result['spectral'] as Map;
-    final comp = result['compression'] as Map;
+    final gen = heuristicResult['generator'] as Map;
+    final c2pa = heuristicResult['c2pa'] as Map;
+    final meta = heuristicResult['metadata'] as Map;
+    final spectral = heuristicResult['spectral'] as Map;
+    final comp = heuristicResult['compression'] as Map;
 
     final aiGenerator = gen['aiGenerator'] as String?;
-    final genScore = (gen['score'] as num).toDouble();
     final c2paPresent = c2pa['c2paPresent'] as bool;
     final metadataScore = (meta['metadataScore'] as num).toDouble();
     final spectralScore = (spectral['spectralScore'] as num).toDouble();
     final compressionScore = (comp['compressionScore'] as num).toDouble();
     final heatmapBytes = spectral['heatmapPngBytes'] as Uint8List;
 
-    // Combine direct-signal AI evidence into a single "AI signal score" in 0..1.
-    //   - explicit generator name → 1.0
-    //   - C2PA manifest present but no editor/camera tag → adds 0.3 (informational lean)
-    //   - else → 0
-    double aiSignalScore = genScore;
-    if (c2paPresent && aiGenerator == null) {
-      aiSignalScore = (aiSignalScore + 0.3).clamp(0.0, 1.0);
+    final aiProbability = aiResult['aiProbability'] as double; // 0..1, 1 = AI
+    final classifierAvailable = aiResult['available'] as bool;
+
+    // AI signal score blends model probability with deterministic evidence.
+    //   - If a generator name was found in metadata, snap to 1.0.
+    //   - Else the classifier dominates, with a small bonus for C2PA-without-camera.
+    double aiSignalScore;
+    if (aiGenerator != null) {
+      aiSignalScore = 1.0;
+    } else {
+      aiSignalScore = aiProbability;
+      if (c2paPresent) aiSignalScore = (aiSignalScore + 0.15).clamp(0.0, 1.0);
     }
 
-    // Aggregate findings (deduped, ordered: AI evidence → C2PA → metadata).
     final findings = <String>[
+      if (classifierAvailable)
+        'On-device classifier: ${(aiProbability * 100).round()}% AI-generated',
       ...List<String>.from(gen['evidence'] as List),
       ...List<String>.from(c2pa['findings'] as List),
       ...List<String>.from(meta['findings'] as List),
     ];
 
-    // Trust score (0..100, 100 = clean human-photographed authentic).
-    // Weights: AI signal 40 · spectral 25 · metadata 20 · compression 15.
+    // Trust score weighting — classifier carries the load now.
+    //   AI signal 55 · spectral 12 · metadata 18 · compression 15.
+    // Sub-scores 0..1, weights sum to 100 ⇒ already 0..100.
     final trustScore = (100 -
-            (aiSignalScore * 40 +
-                spectralScore * 25 +
-                metadataScore * 20 +
+            (aiSignalScore * 55 +
+                spectralScore * 12 +
+                metadataScore * 18 +
                 compressionScore * 15))
         .clamp(0.0, 100.0);
 
@@ -149,6 +168,27 @@ class AnalysisOrchestrator {
 
     await _box.put(id, scan);
     return scan;
+  }
+
+  /// Wraps the classifier in a try/catch — if the model fails to load on a
+  /// device or the inference errors out, we degrade gracefully to a neutral
+  /// 0.5 probability and mark it unavailable so the UI can label findings.
+  Future<Map<String, dynamic>> _classifySafely(img.Image decoded) async {
+    try {
+      final r = await AiClassifierService.instance.classify(decoded);
+      return {
+        'available': true,
+        'aiProbability': r['aiProbability']!,
+        'humanProbability': r['humanProbability']!,
+      };
+    } catch (e) {
+      debugPrint('AI classifier failed: $e');
+      return {
+        'available': false,
+        'aiProbability': 0.0,
+        'humanProbability': 1.0,
+      };
+    }
   }
 
   Future<void> deleteScan(ScanResult scan) async {
