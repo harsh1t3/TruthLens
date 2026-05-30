@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:gap/gap.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -9,6 +10,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../models/scan_result.dart';
+import '../services/ai_classifier_service.dart';
 import '../utils/color_utils.dart';
 import '../utils/constants.dart';
 import '../widgets/ambient_background.dart';
@@ -26,6 +28,16 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _picker = ImagePicker();
+
+  @override
+  void initState() {
+    super.initState();
+    // Re-render once the classifier warmup completes, so the diagnostic
+    // banner reflects the latest status.
+    AiClassifierService.instance.warmUp().whenComplete(() {
+      if (mounted) setState(() {});
+    });
+  }
 
   Future<void> _pickFromGallery() async {
     final picked = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 100);
@@ -71,6 +83,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 slivers: [
                   SliverToBoxAdapter(child: _buildTopBar(context)),
                   SliverToBoxAdapter(child: _buildHeadline()),
+                  SliverToBoxAdapter(child: _buildClassifierStatus()),
                   SliverToBoxAdapter(child: _buildActions()),
                   const SliverToBoxAdapter(child: Gap(28)),
                   SliverPadding(
@@ -161,6 +174,178 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ).animate().fadeIn(duration: 500.ms, delay: 120.ms),
         ],
+      ),
+    );
+  }
+
+  Widget _buildClassifierStatus() {
+    final svc = AiClassifierService.instance;
+    if (svc.status == ClassifierStatus.ready) {
+      return const SizedBox.shrink();
+    }
+    final isWarming = svc.status == ClassifierStatus.warming;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(kPadding, 0, kPadding, 16),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(kRadiusMd),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(kRadiusMd),
+          onTap: isWarming ? null : () => _showClassifierDiagnostic(),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: isWarming
+                  ? const Color(0xFFFFF7E6)
+                  : const Color(0xFFFEE5E1),
+              borderRadius: BorderRadius.circular(kRadiusMd),
+              border: Border.all(
+                color: isWarming
+                    ? const Color(0xFFD89412).withOpacity(0.25)
+                    : const Color(0xFFD33F2F).withOpacity(0.3),
+                width: 0.6,
+              ),
+            ),
+            child: Row(
+              children: [
+                if (isWarming)
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.6,
+                      valueColor: AlwaysStoppedAnimation(Color(0xFFD89412)),
+                    ),
+                  )
+                else
+                  const Icon(
+                    Icons.error_outline_rounded,
+                    color: Color(0xFFD33F2F),
+                    size: 16,
+                  ),
+                const Gap(10),
+                Expanded(
+                  child: Text(
+                    isWarming
+                        ? 'Preparing on-device AI detector…'
+                        : 'AI detector unavailable — using heuristics only. Tap for details.',
+                    style: GoogleFonts.inter(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w500,
+                      color: isWarming
+                          ? const Color(0xFF8B6914)
+                          : const Color(0xFF8C2A20),
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showClassifierDiagnostic() {
+    final svc = AiClassifierService.instance;
+    final diag = StringBuffer()
+      ..writeln('Status: ${svc.status.name}')
+      ..writeln('Error:  ${svc.error ?? "(none)"}')
+      ..writeln('Last output type: ${svc.lastOutputType ?? "(no inference yet)"}');
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(kRadiusLg)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.bug_report_outlined,
+                      color: Color(0xFFD33F2F), size: 18),
+                  const Gap(8),
+                  Text(
+                    'AI detector diagnostic',
+                    style: GoogleFonts.syne(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.2,
+                      color: kTextPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              const Gap(12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF6F5F3),
+                  borderRadius: BorderRadius.circular(kRadiusMd),
+                  border: Border.all(color: kHairline),
+                ),
+                child: SelectableText(
+                  diag.toString().trimRight(),
+                  style: GoogleFonts.firaCode(
+                    fontSize: 12,
+                    color: kTextPrimary,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+              const Gap(10),
+              Text(
+                'When the detector is offline, only the metadata + spectral '
+                'heuristics run. They miss most modern AI images. Copy this '
+                'diagnostic so the cause can be debugged.',
+                style: GoogleFonts.inter(
+                  fontSize: 12.5,
+                  color: kTextSecondary,
+                  height: 1.5,
+                ),
+              ),
+              const Gap(12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      await Clipboard.setData(ClipboardData(text: diag.toString()));
+                      if (!ctx.mounted) return;
+                      Navigator.of(ctx).pop();
+                      messenger.showSnackBar(
+                        const SnackBar(content: Text('Diagnostic copied to clipboard')),
+                      );
+                    },
+                    child: Text(
+                      'Copy',
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        color: kAccent,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text(
+                      'Close',
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        color: kTextSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

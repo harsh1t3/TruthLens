@@ -2,11 +2,18 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:image/image.dart' as img;
 import 'package:onnxruntime/onnxruntime.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+
+/// Status of the classifier session.
+///   - [warming]  : not yet attempted or in progress
+///   - [ready]    : session is live, inference will run
+///   - [failed]   : session creation failed; [error] explains why
+enum ClassifierStatus { warming, ready, failed }
 
 /// On-device AI image classifier.
 ///
@@ -14,9 +21,6 @@ import 'package:path_provider/path_provider.dart';
 /// originally trained on Wikimedia-vs-SDXL pairs.
 ///   - Input  : [1, 3, 224, 224] float32, ImageNet mean/std normalized.
 ///   - Output : [1, 2] logits, index 0 = "artificial", index 1 = "human".
-///
-/// The session is created lazily on the first call and kept alive for the
-/// process. ORT requires `OrtEnv.instance.init()` once before any session.
 class AiClassifierService {
   AiClassifierService._();
   static final instance = AiClassifierService._();
@@ -25,18 +29,21 @@ class AiClassifierService {
   bool _envInited = false;
   Future<void>? _sessionFuture;
 
+  ClassifierStatus _status = ClassifierStatus.warming;
+  String? _error;
+  String? _lastOutputType;
+
+  /// Public diagnostics — read these from UI to surface state to the user.
+  ClassifierStatus get status => _status;
+  String? get error => _error;
+  String? get lastOutputType => _lastOutputType;
+  bool get isReady => _status == ClassifierStatus.ready;
+
   /// ImageNet normalization.
   static const _mean = [0.485, 0.456, 0.406];
   static const _std = [0.229, 0.224, 0.225];
   static const _modelAsset = 'assets/models/ai_detector.onnx';
 
-  /// Whether the model session is ready for inference.
-  bool get isReady => _session != null;
-
-  /// Fire-and-forget session preload. Safe to call multiple times — only the
-  /// first call does any work. Call this once from splash/app startup so the
-  /// 91 MB session-creation cost is paid in the background instead of
-  /// blocking the user's first analysis.
   Future<void> warmUp() {
     _sessionFuture ??= _ensureSession();
     return _sessionFuture!;
@@ -44,37 +51,46 @@ class AiClassifierService {
 
   Future<void> _ensureSession() async {
     if (_session != null) return;
-    if (!_envInited) {
-      OrtEnv.instance.init();
-      _envInited = true;
-    }
+    try {
+      if (!_envInited) {
+        debugPrint('[ai-classifier] initializing OrtEnv');
+        OrtEnv.instance.init();
+        _envInited = true;
+      }
 
-    // ORT needs the model bytes. Cache once to the app docs dir so we don't
-    // re-extract from the asset bundle on every cold start.
-    final docs = await getApplicationDocumentsDirectory();
-    final modelFile = File(p.join(docs.path, 'ai_detector.onnx'));
-    if (!await modelFile.exists()) {
-      final data = await rootBundle.load(_modelAsset);
-      await modelFile.writeAsBytes(data.buffer.asUint8List(), flush: true);
-    }
-    final bytes = await modelFile.readAsBytes();
+      final docs = await getApplicationDocumentsDirectory();
+      final modelFile = File(p.join(docs.path, 'ai_detector.onnx'));
+      if (!await modelFile.exists()) {
+        debugPrint('[ai-classifier] extracting model from asset bundle');
+        final data = await rootBundle.load(_modelAsset);
+        await modelFile.writeAsBytes(data.buffer.asUint8List(), flush: true);
+      }
+      final bytes = await modelFile.readAsBytes();
+      debugPrint('[ai-classifier] model bytes loaded: ${bytes.length}');
 
-    final opts = OrtSessionOptions()
-      ..setIntraOpNumThreads(2)
-      ..setInterOpNumThreads(1);
-    // OrtSession.fromBuffer is synchronous and parses the graph on the
-    // calling thread — that's why we want this called during splash, not
-    // lazily on first analyze.
-    _session = OrtSession.fromBuffer(bytes, opts);
+      final opts = OrtSessionOptions()
+        ..setIntraOpNumThreads(2)
+        ..setInterOpNumThreads(1);
+      _session = OrtSession.fromBuffer(bytes, opts);
+      _status = ClassifierStatus.ready;
+      debugPrint('[ai-classifier] session ready');
+    } catch (e, st) {
+      _status = ClassifierStatus.failed;
+      _error = e.toString();
+      debugPrint('[ai-classifier] session init FAILED: $e\n$st');
+    }
   }
 
   /// Classify the given (already-decoded) image.
   ///
   /// Returns `{aiProbability, humanProbability}` — probabilities sum to 1.
-  /// Throws if the model fails to load or inference errors out; callers
-  /// should treat that as a soft failure and fall back to heuristic scores.
+  /// Throws with a descriptive message when anything goes wrong. Callers
+  /// should catch and propagate the message to the UI.
   Future<Map<String, double>> classify(img.Image src) async {
     await warmUp();
+    if (_session == null) {
+      throw StateError('Classifier session unavailable: ${_error ?? "unknown"}');
+    }
     final input = _preprocess(src);
 
     final tensor = OrtValueTensor.createTensorWithDataList(
@@ -87,6 +103,10 @@ class AiClassifierService {
     List<OrtValue?>? outputs;
     try {
       outputs = await _session!.runAsync(runOpts, inputs);
+    } catch (e) {
+      _error = 'runAsync threw: $e';
+      debugPrint('[ai-classifier] $_error');
+      rethrow;
     } finally {
       tensor.release();
       runOpts.release();
@@ -98,24 +118,45 @@ class AiClassifierService {
 
     final raw = outputs.first!.value;
     outputs.first!.release();
+    _lastOutputType = raw.runtimeType.toString();
+    debugPrint('[ai-classifier] raw output type: $_lastOutputType');
 
-    // ONNX gives a nested List<List<double>>: [[ai_logit, human_logit]].
-    List<double> logits;
-    if (raw is List<List<double>>) {
-      logits = raw.first;
-    } else if (raw is List<List<num>>) {
-      logits = raw.first.map((e) => e.toDouble()).toList();
-    } else if (raw is List<List<List<double>>>) {
-      logits = raw.first.first;
-    } else {
-      throw StateError('Unexpected ONNX output shape: ${raw.runtimeType}');
+    final logits = _flattenToDoubles(raw);
+    if (logits.length != 2) {
+      throw StateError(
+        'Expected 2 logits, got ${logits.length} from $_lastOutputType',
+      );
     }
+    debugPrint('[ai-classifier] logits: $logits');
 
     final probs = _softmax(logits);
     return {
       'aiProbability': probs[0],
       'humanProbability': probs[1],
     };
+  }
+
+  /// Walk a nested list/tensor of any depth and extract numeric leaves into a
+  /// flat List<double>. Handles every shape the onnxruntime plugin might
+  /// return: nested Lists, Float32List, Iterable<dynamic>, etc.
+  List<double> _flattenToDoubles(Object? node) {
+    final out = <double>[];
+    void walk(Object? v) {
+      if (v == null) return;
+      if (v is num) {
+        out.add(v.toDouble());
+      } else if (v is List) {
+        for (final e in v) {
+          walk(e);
+        }
+      } else if (v is Iterable) {
+        for (final e in v) {
+          walk(e);
+        }
+      }
+    }
+    walk(node);
+    return out;
   }
 
   /// Decode → resize 224×224 (bilinear) → ImageNet-normalize → NCHW float32.

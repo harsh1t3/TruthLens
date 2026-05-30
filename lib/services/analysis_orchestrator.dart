@@ -93,6 +93,7 @@ class AnalysisOrchestrator {
 
     final aiProbability = aiResult['aiProbability'] as double; // 0..1, 1 = AI
     final classifierAvailable = aiResult['available'] as bool;
+    final classifierError = aiResult['error'] as String?;
 
     // AI signal score blends model probability with deterministic evidence.
     //   - If a generator name was found in metadata, snap to 1.0.
@@ -107,7 +108,10 @@ class AnalysisOrchestrator {
 
     final findings = <String>[
       if (classifierAvailable)
-        'On-device classifier: ${(aiProbability * 100).round()}% AI-generated',
+        'On-device classifier: ${(aiProbability * 100).round()}% AI-generated'
+      else
+        'On-device classifier UNAVAILABLE — heuristics only. '
+            '(${classifierError ?? "unknown error"})',
       ...List<String>.from(gen['evidence'] as List),
       ...List<String>.from(c2pa['findings'] as List),
       ...List<String>.from(meta['findings'] as List),
@@ -180,6 +184,7 @@ class AnalysisOrchestrator {
         'available': true,
         'aiProbability': r['aiProbability']!,
         'humanProbability': r['humanProbability']!,
+        'error': null,
       };
     } catch (e) {
       debugPrint('AI classifier failed: $e');
@@ -187,6 +192,7 @@ class AnalysisOrchestrator {
         'available': false,
         'aiProbability': 0.0,
         'humanProbability': 1.0,
+        'error': e.toString(),
       };
     }
   }
