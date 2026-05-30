@@ -23,11 +23,24 @@ class AiClassifierService {
 
   OrtSession? _session;
   bool _envInited = false;
+  Future<void>? _sessionFuture;
 
   /// ImageNet normalization.
   static const _mean = [0.485, 0.456, 0.406];
   static const _std = [0.229, 0.224, 0.225];
   static const _modelAsset = 'assets/models/ai_detector.onnx';
+
+  /// Whether the model session is ready for inference.
+  bool get isReady => _session != null;
+
+  /// Fire-and-forget session preload. Safe to call multiple times — only the
+  /// first call does any work. Call this once from splash/app startup so the
+  /// 91 MB session-creation cost is paid in the background instead of
+  /// blocking the user's first analysis.
+  Future<void> warmUp() {
+    _sessionFuture ??= _ensureSession();
+    return _sessionFuture!;
+  }
 
   Future<void> _ensureSession() async {
     if (_session != null) return;
@@ -36,9 +49,8 @@ class AiClassifierService {
       _envInited = true;
     }
 
-    // ORT needs the model bytes. We cache them once to the app docs dir so we
-    // don't re-extract from the asset bundle on every cold start, but we
-    // always re-load into RAM here for the session.
+    // ORT needs the model bytes. Cache once to the app docs dir so we don't
+    // re-extract from the asset bundle on every cold start.
     final docs = await getApplicationDocumentsDirectory();
     final modelFile = File(p.join(docs.path, 'ai_detector.onnx'));
     if (!await modelFile.exists()) {
@@ -50,6 +62,9 @@ class AiClassifierService {
     final opts = OrtSessionOptions()
       ..setIntraOpNumThreads(2)
       ..setInterOpNumThreads(1);
+    // OrtSession.fromBuffer is synchronous and parses the graph on the
+    // calling thread — that's why we want this called during splash, not
+    // lazily on first analyze.
     _session = OrtSession.fromBuffer(bytes, opts);
   }
 
@@ -59,7 +74,7 @@ class AiClassifierService {
   /// Throws if the model fails to load or inference errors out; callers
   /// should treat that as a soft failure and fall back to heuristic scores.
   Future<Map<String, double>> classify(img.Image src) async {
-    await _ensureSession();
+    await warmUp();
     final input = _preprocess(src);
 
     final tensor = OrtValueTensor.createTensorWithDataList(

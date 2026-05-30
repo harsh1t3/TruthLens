@@ -112,6 +112,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                         child: GlassCard(
                           padding: const EdgeInsets.all(10),
                           radius: kRadiusXl,
+                          frosted: true,
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(kRadiusLg),
                             child: Stack(

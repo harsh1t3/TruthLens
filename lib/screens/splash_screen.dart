@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../services/ai_classifier_service.dart';
 import '../utils/constants.dart';
 import '../widgets/ambient_background.dart';
 import '../widgets/glass_card.dart';
@@ -18,6 +19,17 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
+
+    // Defer model warmup to AFTER the first frame is painted, so the splash
+    // logo/tagline renders cleanly before the (synchronous, native) ONNX
+    // session creation begins. The future runs in parallel with the splash
+    // delay — if it's still pending when we navigate, classify() awaits the
+    // same future and shows the user a brief wait on the Analysis screen
+    // instead of a frozen UI here.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      AiClassifierService.instance.warmUp();
+    });
+
     Future.delayed(const Duration(milliseconds: 2200), () {
       if (!mounted) return;
       Navigator.of(context).pushReplacement(

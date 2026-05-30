@@ -224,6 +224,7 @@ class ResultScreen extends StatelessWidget {
     return GlassCard(
       padding: const EdgeInsets.all(8),
       radius: kRadiusLg,
+      frosted: true,
       child: AspectRatio(
         aspectRatio: 4 / 3,
         child: ClipRRect(

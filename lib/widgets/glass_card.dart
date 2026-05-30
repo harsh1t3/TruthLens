@@ -2,21 +2,26 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
-/// Translucent frosted-glass surface.
+/// Glass-style surface — translucent white with a hairline border and a
+/// subtle drop shadow. **No `BackdropFilter` by default.**
 ///
-/// Composes:
-///   - [BackdropFilter] for the actual frost
-///   - white at low opacity for the diffuse fill
-///   - 1px hairline border at black-8% for the glass edge
-///   - subtle shadow for depth
+/// Stacking many `BackdropFilter` instances per frame tanks framerate on
+/// mid-range phones because every blur instance re-rasterizes the backdrop.
+/// We rely on the diffuse colored blobs of [AmbientBackground] showing
+/// through the 55% white fill to get a "frosted" feel without paying the
+/// blur cost on every small card.
+///
+/// Pass `frosted: true` for the rare hero surface that genuinely needs a
+/// real blur. Use it sparingly — at most one or two per screen.
 class GlassCard extends StatelessWidget {
   const GlassCard({
     super.key,
     required this.child,
     this.padding = const EdgeInsets.all(18),
     this.radius = 20,
-    this.opacity = 0.55,
-    this.blur = 22,
+    this.opacity = 0.65,
+    this.frosted = false,
+    this.blur = 18,
     this.onTap,
   });
 
@@ -24,6 +29,7 @@ class GlassCard extends StatelessWidget {
   final EdgeInsetsGeometry padding;
   final double radius;
   final double opacity;
+  final bool frosted;
   final double blur;
   final VoidCallback? onTap;
 
@@ -32,42 +38,41 @@ class GlassCard extends StatelessWidget {
     final borderRadius = BorderRadius.circular(radius);
     Widget content = Padding(padding: padding, child: child);
     if (onTap != null) {
-      content = InkWell(
+      content = InkWell(borderRadius: borderRadius, onTap: onTap, child: content);
+    }
+
+    final decorated = DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(opacity),
         borderRadius: borderRadius,
-        onTap: onTap,
-        child: content,
-      );
+        border: Border.all(color: Colors.white.withOpacity(0.55), width: 0.6),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF1A1A1F).withOpacity(0.05),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Material(color: Colors.transparent, child: content),
+    );
+
+    if (!frosted) {
+      return ClipRRect(borderRadius: borderRadius, child: decorated);
     }
 
     return ClipRRect(
       borderRadius: borderRadius,
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(opacity),
-            borderRadius: borderRadius,
-            border: Border.all(
-              color: Colors.white.withOpacity(0.5),
-              width: 0.6,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF1A1A1F).withOpacity(0.05),
-                blurRadius: 24,
-                offset: const Offset(0, 12),
-              ),
-            ],
-          ),
-          child: Material(color: Colors.transparent, child: content),
-        ),
+        child: decorated,
       ),
     );
   }
 }
 
-/// Solid dark glass — same construction, darker tint. Use sparingly for
-/// primary actions / accents.
+/// Solid dark surface — translucent dark fill, no blur. Used for primary
+/// CTAs and the selected filter chip.
 class DarkGlassCard extends StatelessWidget {
   const DarkGlassCard({
     super.key,
@@ -87,34 +92,24 @@ class DarkGlassCard extends StatelessWidget {
     final borderRadius = BorderRadius.circular(radius);
     Widget content = Padding(padding: padding, child: child);
     if (onTap != null) {
-      content = InkWell(
-        borderRadius: borderRadius,
-        onTap: onTap,
-        child: content,
-      );
+      content = InkWell(borderRadius: borderRadius, onTap: onTap, child: content);
     }
     return ClipRRect(
       borderRadius: borderRadius,
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: const Color(0xFF1A1A1F).withOpacity(0.88),
-            borderRadius: borderRadius,
-            border: Border.all(
-              color: Colors.white.withOpacity(0.07),
-              width: 0.6,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1A1F).withOpacity(0.92),
+          borderRadius: borderRadius,
+          border: Border.all(color: Colors.white.withOpacity(0.07), width: 0.6),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF1A1A1F).withOpacity(0.16),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
             ),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF1A1A1F).withOpacity(0.18),
-                blurRadius: 24,
-                offset: const Offset(0, 12),
-              ),
-            ],
-          ),
-          child: Material(color: Colors.transparent, child: content),
+          ],
         ),
+        child: Material(color: Colors.transparent, child: content),
       ),
     );
   }
