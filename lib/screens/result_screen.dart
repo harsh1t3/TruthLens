@@ -221,28 +221,143 @@ class ResultScreen extends StatelessWidget {
   }
 
   Widget _buildImageWithHeatmap() {
-    return GlassCard(
-      padding: const EdgeInsets.all(8),
-      radius: kRadiusLg,
-      frosted: true,
-      child: AspectRatio(
-        aspectRatio: 4 / 3,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(kRadiusMd),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              HeatmapOverlay(imagePath: scan.imagePath, heatmapPath: scan.heatmapPath),
-              if (scan.heatmapPath != null)
-                const Positioned(
-                  left: 10,
-                  top: 10,
-                  child: _GlassBadge(label: 'SPECTRAL HEATMAP'),
-                ),
-            ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        GlassCard(
+          padding: const EdgeInsets.all(8),
+          radius: kRadiusLg,
+          frosted: true,
+          child: AspectRatio(
+            aspectRatio: 4 / 3,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(kRadiusMd),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  HeatmapOverlay(imagePath: scan.imagePath, heatmapPath: scan.heatmapPath),
+                  if (scan.heatmapPath != null)
+                    Positioned(
+                      left: 10,
+                      top: 10,
+                      child: Builder(
+                        builder: (ctx) => GestureDetector(
+                          onTap: () => _showHeatmapExplainer(ctx),
+                          child: const _GlassBadge(label: 'FLAGGED REGIONS'),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
         ),
-      ),
+        if (scan.heatmapPath != null) ...[
+          const Gap(8),
+          Builder(
+            builder: (ctx) => GestureDetector(
+              onTap: () => _showHeatmapExplainer(ctx),
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline_rounded,
+                      size: 13,
+                      color: kTextSecondary,
+                    ),
+                    const Gap(6),
+                    Expanded(
+                      child: Text(
+                        'Boxes mark patches whose texture looks inconsistent with natural photography. Tap to learn more.',
+                        style: GoogleFonts.inter(
+                          fontSize: 12,
+                          color: kTextSecondary,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _showHeatmapExplainer(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogCtx) {
+        return Dialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(kRadiusLg)),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.waves_outlined, color: Color(0xFF1E88E5), size: 18),
+                    const Gap(8),
+                    Text(
+                      'Flagged regions',
+                      style: GoogleFonts.syne(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.2,
+                        color: kTextPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+                const Gap(12),
+                Text(
+                  'Real photographs have fine micro-texture everywhere — pores on skin, '
+                  'grain on a wall, irregularities on fabric. AI-generated images tend to '
+                  'smooth this texture away in detailed regions, especially around faces, '
+                  'hands, and backgrounds.',
+                  style: GoogleFonts.inter(
+                    fontSize: 13.5,
+                    color: kTextSecondary,
+                    height: 1.55,
+                  ),
+                ),
+                const Gap(10),
+                Text(
+                  'The blue boxes mark patches of the image where the analysis found that '
+                  'kind of unnatural smoothness. They are a supporting clue, not a verdict '
+                  'on their own — the trust score combines this with several other signals.',
+                  style: GoogleFonts.inter(
+                    fontSize: 13.5,
+                    color: kTextSecondary,
+                    height: 1.55,
+                  ),
+                ),
+                const Gap(12),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => Navigator.of(dialogCtx).pop(),
+                    child: Text(
+                      'Got it',
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        color: kAccent,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 

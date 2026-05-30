@@ -12,6 +12,24 @@ class AmbientBackground extends StatelessWidget {
   Widget build(BuildContext context) {
     return Stack(
       children: [
+        // The three diffuse RadialGradient blobs never change — wrap them in
+        // a RepaintBoundary so the Flutter compositor caches them as a single
+        // raster layer. Otherwise every parent repaint (and there are many on
+        // scroll / animation) re-rasterizes the gradients, which is wasteful.
+        const RepaintBoundary(child: _AmbientBlobs()),
+        Positioned.fill(child: child),
+      ],
+    );
+  }
+}
+
+class _AmbientBlobs extends StatelessWidget {
+  const _AmbientBlobs();
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
         const Positioned.fill(child: ColoredBox(color: Color(0xFFF6F5F3))),
         Positioned(
           top: -140,
@@ -28,7 +46,6 @@ class AmbientBackground extends StatelessWidget {
           right: -100,
           child: _Blob(color: const Color(0xFFB7E6D9), size: 380),
         ),
-        Positioned.fill(child: child),
       ],
     );
   }
