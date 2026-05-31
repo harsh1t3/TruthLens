@@ -106,6 +106,52 @@ Minimum Android SDK: API 21 (Lollipop). Permissions: CAMERA on first
 capture; gallery uses the platform Photo Picker (no permission needed on
 API 33+).
 
+### Note on the `onnxruntime` Flutter plugin
+
+The plugin's bindings call `DynamicLibrary.open("libonnxruntime.so")` via
+FFI. On modern Android the app's native-lib directory is not always on
+`dlopen`'s default search path, so two things are required for the
+classifier to load on a real device:
+
+1. `MainActivity` force-loads the lib via `System.loadLibrary("onnxruntime")`
+   in a static initializer, before the Flutter engine starts. The JVM
+   class loader always knows the app's native-lib dir, and once the
+   symbol is in the process, the plugin's later FFI `dlopen` resolves
+   from the in-memory linker cache.
+2. The AndroidManifest carries `android:extractNativeLibs="true"` and
+   `build.gradle.kts` opts into `useLegacyPackaging = true`. Together
+   they force the installer to extract the libs to disk.
+
+If your APK is built without (1), the classifier will silently fall
+back to heuristics and obvious AI images will score 90+. Watch for the
+red "AI detector unavailable" banner on home in that case.
+
+### Running on an x86_64 emulator
+
+The plugin ships native libs only for arm32 / arm64. To run the
+classifier inside an x86_64 Android emulator, drop the matching
+`libonnxruntime.so` from Microsoft's `onnxruntime-android-1.15.1.aar`
+into `android/app/src/main/jniLibs/x86_64/`. That path is gitignored —
+it's a dev convenience, no real-device build needs it.
+
+## Measured behavior
+
+Small sanity-check on the x86_64 emulator with the on-device classifier
+loaded — six images, all picked through the Photo Picker:
+
+| Image                            | Source           | Verdict             | Trust |
+|----------------------------------|------------------|---------------------|-------|
+| Astronaut riding horse           | Flux             | Likely AI-Generated | 43    |
+| Red-haired portrait              | Flux             | Likely AI-Generated | 42    |
+| Misty mountain landscape         | Flux             | Likely AI-Generated | 40    |
+| Anime girl with cherry blossoms  | Flux             | Likely AI-Generated | 43    |
+| Cyberpunk neon city              | Flux             | Likely Authentic ✗  | 98    |
+| Coffee cup (2003 Sony Cybershot) | Real photo       | Likely Authentic    | 98    |
+
+5 of 6 AI images flagged, real photo correctly authenticated. The
+cyberpunk image is a known failure mode — photorealistic neon styles
+mimic genuine photography too well for the classifier to disambiguate.
+
 ## Honest limitations
 
 - **The classifier was fine-tuned on Wikimedia photos vs SDXL images.** It

@@ -48,3 +48,10 @@ app.*.map.json
 /assets/models/*.onnx
 /tools/model_prep/model.onnx
 /tools/model_prep/model.int8.onnx
+
+# x86_64 ONNX Runtime native lib — dev-only convenience for running the
+# classifier inside an x86_64 Android emulator. The flutter `onnxruntime`
+# plugin ships arm32/arm64 only; this file is extracted from Microsoft's
+# onnxruntime-android-1.15.1 AAR (see tools/model_prep notes) and is not
+# needed for any real-device build.
+/android/app/src/main/jniLibs/x86_64/libonnxruntime.so
