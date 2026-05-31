@@ -26,7 +26,37 @@ const _generators = <String, String>{
   'krea': 'Krea',
   'runway': 'Runway',
   'gen-3': 'Runway Gen-3',
+  'pollinations': 'Pollinations.ai',
+  'sana': 'NVIDIA Sana',
+  'kandinsky': 'Kandinsky',
+  'playground': 'Playground.ai',
+  'lcm': 'Latent Consistency Model',
+  'wan': 'Wan (AI video)',
+  'turbo': 'Stable Diffusion Turbo',
 };
+
+/// Keywords found in EXIF UserComment / ImageDescription that *strongly*
+/// imply AI generation regardless of whether a generator name is also there.
+/// Matched as substrings, case-insensitive.
+const _aiPromptMarkers = <String>[
+  '"prompt"', // JSON-encoded prompt — Pollinations, ComfyUI, A1111, etc.
+  'originalprompt',
+  'negative_prompt',
+  'negative prompt',
+  'sampler:',
+  'sampler_name',
+  'cfg_scale',
+  'cfg scale',
+  'denoising_strength',
+  'denoising strength',
+  'steps:',
+  'lora:',
+  'lora hashes',
+  'ti hashes',
+  'clip skip',
+  'model hash',
+  'sd_model',
+];
 
 /// Cross-format AI generator name scanner.
 ///
@@ -47,15 +77,31 @@ Future<Map<String, dynamic>> runGeneratorSignature(Uint8List bytes) async {
       'Image ProcessingSoftware',
       'Image ImageDescription',
       'EXIF UserComment',
+      'Image Make',
+      'Image Model',
     ];
     for (final t in searchTags) {
       final v = tags[t]?.printable;
       if (v == null || v.isEmpty) continue;
       final lower = v.toLowerCase();
+
+      // Named generator hit.
       for (final entry in _generators.entries) {
         if (lower.contains(entry.key)) {
           generator ??= entry.value;
           evidence.add('$t contains "${entry.value}"');
+        }
+      }
+
+      // Generic AI-prompt fingerprints — Pollinations/ComfyUI/A1111 all
+      // embed JSON-encoded prompts or "key: value" parameter dumps in
+      // UserComment / ImageDescription. A hit here is essentially proof
+      // of AI generation even without a recognizable tool name.
+      for (final marker in _aiPromptMarkers) {
+        if (lower.contains(marker)) {
+          generator ??= 'AI image generator';
+          evidence.add('$t carries an AI prompt fingerprint ("$marker")');
+          break;
         }
       }
     }
